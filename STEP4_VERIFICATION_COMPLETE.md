@@ -140,7 +140,7 @@ python -m pytest tests/test_reasoning_models.py tests/test_reasoner.py -v
 
 ### **API Key**: ✅ Set in `.env`
 ```bash
-GEMINI_API_KEY=AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38
+
 ```
 
 ### **Model**: ✅ `gemini-2.5-flash-lite`
