@@ -16,14 +16,14 @@ pip install google-generativeai
 
 **Option A: Environment Variable**
 ```bash
-export GEMINI_API_KEY="AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38"
+export GEMINI_API_KEY="your_api_key_here"
 ```
 
 **Option B: Create .env File**
 ```bash
 cp .env.example .env
 # Edit .env and add:
-# GEMINI_API_KEY=AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38
+# GEMINI_API_KEY=your_api_key_here
 ```
 
 ---
@@ -33,7 +33,7 @@ cp .env.example .env
 ### **Run the Examples**
 ```bash
 cd "/Users/bhanujbhalla/Desktop/Projects/payment agentic ai "
-export GEMINI_API_KEY="AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38"
+export GEMINI_API_KEY="your_api_key_here"
 PYTHONPATH=. python examples/agent_reasoning.py
 ```
 
@@ -81,7 +81,7 @@ python -m pytest tests/test_reasoning_models.py tests/test_reasoner.py -v
 
 ### **Test 1: Basic Reasoning with LLM**
 ```bash
-export GEMINI_API_KEY="AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38"
+export GEMINI_API_KEY="your_api_key_here"
 
 python -c "
 import asyncio
@@ -228,10 +228,10 @@ pip install google-generativeai
 ### **Issue: API key not found**
 ```bash
 # Solution: Set environment variable
-export GEMINI_API_KEY="AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38"
+export GEMINI_API_KEY="your_api_key_here"
 
 # Or create .env file
-echo 'GEMINI_API_KEY=AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38' > .env
+echo 'GEMINI_API_KEY=your_api_key_here' > .env
 ```
 
 ### **Issue: JSON parsing error**
@@ -299,7 +299,7 @@ if __name__ == "__main__":
 
 Run it:
 ```bash
-export GEMINI_API_KEY="AIzaSyANaV7xirbEZX0tzkyiI8PKR4eJ7Cr6c38"
+export GEMINI_API_KEY="your_api_key_here"
 PYTHONPATH=. python test_reasoning.py
 ```
 

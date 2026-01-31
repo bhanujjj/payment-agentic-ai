@@ -60,11 +60,14 @@ class Reasoner:
         
         # Generation config
         self.temperature = self.config.get('temperature', 0.3)
-        self.max_tokens = self.config.get('max_tokens', 1000)
+        self.max_tokens = self.config.get('max_tokens', 2000)  # Increased for complete JSON
     
     async def reason(self, signals: PaymentSignals) -> ReasoningResult:
         """
         Reason about the payment signals.
+        
+        Uses DETERMINISTIC logic for classification and confidence.
+        Uses Gemini ONLY for human-readable explanation (optional).
         
         Args:
             signals: Aggregated payment signals from metrics engine
@@ -74,210 +77,84 @@ class Reasoner:
         """
         self.logger.info("Starting reasoning process")
         
-        if self.llm_client is None:
-            self.logger.warning("No LLM client available, using fallback reasoning")
-            return self._fallback_reasoning(signals)
+        # STEP 1: Deterministic classification and confidence (NO LLM)
+        reasoning = self._deterministic_reasoning(signals)
         
-        try:
-            # Build reasoning prompt
-            prompt = self._build_reasoning_prompt(signals)
-            
-            # Call Gemini
-            response = self.llm_client.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=self.temperature,
-                    max_output_tokens=self.max_tokens,
-                )
-            )
-            
-            # Parse response
-            reasoning = self._parse_reasoning_response(response.text, signals)
-            
-            self.logger.info(f"Reasoning complete. Top hypothesis: {reasoning.get_top_hypothesis()}")
-            
-            return reasoning
-            
-        except Exception as e:
-            self.logger.error(f"Error during reasoning: {e}")
-            return self._fallback_reasoning(signals)
+        # STEP 2: Try to get human-readable explanation from Gemini (optional)
+        if self.llm_client is not None:
+            try:
+                explanation = await self._get_llm_explanation(signals, reasoning)
+                reasoning.explanation = explanation
+                self.logger.info("✅ Got LLM explanation")
+            except Exception as e:
+                self.logger.warning(f"LLM explanation failed: {e}. Using default.")
+                # Keep the default explanation from deterministic reasoning
+        
+        self.logger.info(f"Reasoning complete. Top hypothesis: {reasoning.get_top_hypothesis()}")
+        return reasoning
     
-    def _build_reasoning_prompt(self, signals: PaymentSignals) -> str:
+    async def _get_llm_explanation(
+        self,
+        signals: PaymentSignals,
+        reasoning: ReasoningResult
+    ) -> str:
         """
-        Build prompt for LLM reasoning.
+        Get human-readable explanation from Gemini.
+        
+        Gemini returns PLAIN TEXT ONLY - no JSON, no structure.
+        This is used for logs, dashboards, and debugging.
         
         Args:
             signals: Payment signals
+            reasoning: Deterministic reasoning result
             
         Returns:
-            Formatted prompt
+            Plain text explanation (1-2 sentences)
         """
-        # Convert signals to readable format
-        signals_summary = {
-            "time_window": f"{signals.window_duration_seconds}s",
-            "total_payments": signals.total_payments,
-            "success_rate": f"{signals.overall_success_rate:.1%}",
-            "failure_rate": f"{signals.overall_failure_rate:.1%}",
-            "avg_latency_ms": f"{signals.avg_latency_ms:.0f}",
-            "p95_latency_ms": f"{signals.p95_latency_ms:.0f}",
-            "p99_latency_ms": f"{signals.p99_latency_ms:.0f}",
-            "latency_trend": signals.latency_trend.value,
-            "volume_trend": signals.volume_trend.value,
-            "failure_rate_trend": signals.failure_rate_trend.value,
-            "total_retries": signals.total_retries,
-            "retry_effectiveness": f"{signals.retry_effectiveness:+.2f}",
-            "degraded_banks": signals.degraded_banks,
-            "degraded_methods": signals.degraded_methods,
-            "top_errors": signals.top_errors[:5],
-            "has_anomaly": signals.has_anomaly,
-            "anomaly_severity": signals.anomaly_severity.value if signals.has_anomaly else "none"
-        }
+        # Get top hypothesis
+        top_hyp = reasoning.get_top_hypothesis()
+        if not top_hyp:
+            return reasoning.explanation
         
-        # Add bank-specific details if there are issues
-        if signals.degraded_banks:
-            signals_summary["bank_failure_rates"] = {
-                bank: f"{rate:.1%}"
-                for bank, rate in signals.bank_failure_rates.items()
-                if bank in signals.degraded_banks
-            }
+        hypothesis_name, confidence = top_hyp
         
-        # Add method-specific details if there are issues
-        if signals.degraded_methods:
-            signals_summary["method_failure_rates"] = {
-                method: f"{rate:.1%}"
-                for method, rate in signals.method_failure_rates.items()
-                if method in signals.degraded_methods
-            }
+        # Build simple prompt for plain text explanation
+        prompt = f"""Explain this payment system issue in 1-2 clear sentences for an operations dashboard.
+
+Detected Issue: {hypothesis_name}
+Confidence: {confidence:.0%}
+Success Rate: {signals.overall_success_rate:.1%}
+Degraded Banks: {signals.degraded_banks if signals.degraded_banks else 'None'}
+Avg Latency: {signals.avg_latency_ms:.0f}ms
+
+Write a brief, clear explanation for the ops team. Plain text only, no formatting."""
         
-        prompt = f"""You are an expert payment systems analyst. Analyze the following payment system signals and provide structured reasoning.
-
-PAYMENT SIGNALS:
-{json.dumps(signals_summary, indent=2)}
-
-YOUR TASK:
-1. Identify possible root causes (hypotheses) with confidence scores (0.0 to 1.0)
-2. Provide clear explanation of what you think is happening
-3. State your assumptions
-4. Identify what you're uncertain about
-5. Give an overall confidence score
-
-POSSIBLE HYPOTHESES (use these or create your own):
-- bank_degradation: A specific bank is experiencing performance issues
-- bank_outage: A bank is completely down
-- network_issues: Network connectivity problems
-- retry_storm: Excessive retries causing cascading failures
-- fraud_spike: Unusual fraud detection activity
-- rate_limiting: Rate limits being hit
-- payment_method_issue: Specific payment method having problems
-- normal_operation: Everything is operating normally
-- peak_load: System under high load
-- configuration_error: Misconfiguration causing issues
-
-CRITICAL INSTRUCTIONS:
-- Return ONLY valid JSON with no additional text or markdown
-- Use double quotes for all strings
-- Ensure all JSON is properly formatted
-- Confidence scores must be numbers between 0.0 and 1.0
-
-REQUIRED JSON SCHEMA:
-{{
-  "hypotheses": {{
-    "hypothesis_name": 0.8,
-    "another_hypothesis": 0.6
-  }},
-  "explanation": "Clear explanation of what is happening",
-  "assumptions": ["assumption 1", "assumption 2"],
-  "uncertainty": ["what you are unsure about"],
-  "overall_confidence": 0.75
-}}
-
-Provide your reasoning as valid JSON:"""
-        
-        return prompt
-    
-    def _parse_reasoning_response(
-        self,
-        response_text: str,
-        signals: PaymentSignals
-    ) -> ReasoningResult:
-        """
-        Parse LLM response into structured reasoning.
-        
-        Args:
-            response_text: Raw LLM response
-            signals: Original signals (for fallback)
-            
-        Returns:
-            Structured reasoning result
-        """
-        try:
-            # Try to extract JSON from response
-            # Sometimes LLM adds markdown code blocks
-            text = response_text.strip()
-            
-            # Remove markdown code blocks if present
-            if text.startswith("```json"):
-                text = text[7:]
-            elif text.startswith("```"):
-                text = text[3:]
-            
-            if text.endswith("```"):
-                text = text[:-3]
-            
-            text = text.strip()
-            
-            # Try to parse JSON
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as e:
-                # Try to fix common JSON issues
-                self.logger.warning(f"Initial JSON parse failed: {e}. Attempting to fix...")
-                
-                # Try to extract JSON object using regex
-                import re
-                json_match = re.search(r'\{.*\}', text, re.DOTALL)
-                if json_match:
-                    text = json_match.group(0)
-                    # Try to fix common issues
-                    text = text.replace("'", '"')  # Replace single quotes
-                    text = re.sub(r',\s*}', '}', text)  # Remove trailing commas
-                    text = re.sub(r',\s*]', ']', text)  # Remove trailing commas in arrays
-                    parsed = json.loads(text)
-                else:
-                    raise
-            
-            # Validate and extract fields
-            hypotheses = parsed.get("hypotheses", {})
-            
-            # Ensure confidence scores are valid
-            hypotheses = {
-                k: max(0.0, min(1.0, float(v)))
-                for k, v in hypotheses.items()
-            }
-            
-            reasoning = ReasoningResult(
-                hypotheses=hypotheses,
-                explanation=parsed.get("explanation", ""),
-                assumptions=parsed.get("assumptions", []),
-                uncertainty=parsed.get("uncertainty", []),
-                overall_confidence=max(0.0, min(1.0, float(parsed.get("overall_confidence", 0.5)))),
-                raw_response=response_text
+        # Call Gemini
+        response = self.llm_client.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=150,  # Short response
             )
-            
-            return reasoning
-            
-        except Exception as e:
-            self.logger.error(f"Failed to parse LLM response: {e}")
-            self.logger.debug(f"Raw response: {response_text[:500]}")
-            
-            # Fallback to rule-based reasoning
-            return self._fallback_reasoning(signals)
-    
-    def _fallback_reasoning(self, signals: PaymentSignals) -> ReasoningResult:
-        """
-        Fallback reasoning when LLM is unavailable or fails.
+        )
         
-        This uses simple heuristics to provide basic reasoning.
+        # Return plain text (no parsing needed!)
+        explanation = response.text.strip()
+        
+        # Fallback if response is too long or empty
+        if not explanation or len(explanation) > 500:
+            return reasoning.explanation
+        
+        return explanation
+    
+
+    
+    def _deterministic_reasoning(self, signals: PaymentSignals) -> ReasoningResult:
+        """
+        Deterministic reasoning based on payment signals.
+        
+        This is the PRIMARY reasoning method - uses rule-based logic
+        for classification and confidence calculation.
         
         Args:
             signals: Payment signals
