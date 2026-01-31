@@ -3,11 +3,29 @@ Agent module - Core autonomous agent logic.
 
 This module contains the main agent implementation including:
 - Observation layer
-- Reasoning engine
-- Decision making
-- Action execution
+Agent module - Core agent components.
 """
 
-from agent.core import PaymentAgent
+from agent.signals import PaymentSignals, BankSignal, Trend, Severity
+from agent.metrics import MetricsEngine
+from agent.reasoning_models import ReasoningResult, HypothesisType
+from agent.reasoner import Reasoner
+from agent.decision_models import Decision, ActionScore, ActionType, RiskLevel, DecisionConstraints
+from agent.decider import DecisionEngine
 
-__all__ = ["PaymentAgent"]
+__all__ = [
+    'PaymentSignals',
+    'BankSignal',
+    'Trend',
+    'Severity',
+    'MetricsEngine',
+    'ReasoningResult',
+    'HypothesisType',
+    'Reasoner',
+    'Decision',
+    'ActionScore',
+    'ActionType',
+    'RiskLevel',
+    'DecisionConstraints',
+    'DecisionEngine',
+]
