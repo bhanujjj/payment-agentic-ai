@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PaymentEvent",
+  "description": "Schema for a payment event",
+  "type": "object",
+  "required": ["event_id", "timestamp", "payment_id", "status"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "Unique event identifier"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Event timestamp in ISO 8601 format"
+    },
+    "payment_id": {
+      "type": "string",
+      "description": "Payment transaction identifier"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "processing", "completed", "failed", "timeout"],
+      "description": "Payment status"
+    },
+    "amount": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Payment amount"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "Currency code (ISO 4217)"
+    },
+    "merchant_id": {
+      "type": "string",
+      "description": "Merchant identifier"
+    },
+    "customer_id": {
+      "type": "string",
+      "description": "Customer identifier"
+    },
+    "error_code": {
+      "type": "string",
+      "description": "Error code if payment failed"
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Human-readable error message"
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of retry attempts"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata"
+    }
+  }
+}

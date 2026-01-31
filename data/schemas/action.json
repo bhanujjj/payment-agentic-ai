@@ -1,0 +1,86 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Action",
+    "description": "Schema for an agent action",
+    "type": "object",
+    "required": [
+        "action_id",
+        "action_type",
+        "timestamp"
+    ],
+    "properties": {
+        "action_id": {
+            "type": "string",
+            "description": "Unique action identifier"
+        },
+        "action_type": {
+            "type": "string",
+            "enum": [
+                "retry",
+                "escalate",
+                "investigate",
+                "cancel",
+                "wait",
+                "none"
+            ],
+            "description": "Type of action to take"
+        },
+        "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Action timestamp"
+        },
+        "payment_id": {
+            "type": "string",
+            "description": "Target payment ID"
+        },
+        "parameters": {
+            "type": "object",
+            "description": "Action-specific parameters",
+            "properties": {
+                "delay_seconds": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Delay before action (for retry/wait)"
+                },
+                "escalation_level": {
+                    "type": "string",
+                    "enum": [
+                        "low",
+                        "medium",
+                        "high",
+                        "critical"
+                    ],
+                    "description": "Escalation priority"
+                },
+                "investigation_type": {
+                    "type": "string",
+                    "enum": [
+                        "fraud",
+                        "technical",
+                        "customer",
+                        "merchant"
+                    ],
+                    "description": "Type of investigation"
+                }
+            }
+        },
+        "score": {
+            "type": "number",
+            "description": "Action score from decision engine"
+        },
+        "risk_level": {
+            "type": "string",
+            "enum": [
+                "low",
+                "medium",
+                "high"
+            ],
+            "description": "Risk level of this action"
+        },
+        "justification": {
+            "type": "string",
+            "description": "Human-readable justification for action"
+        }
+    }
+}
