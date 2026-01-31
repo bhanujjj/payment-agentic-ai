@@ -149,14 +149,15 @@ class DecisionEngine:
         # Calculate reversibility
         reversibility = self._assess_reversibility(action)
         
-        # Calculate final score
+        # Calculate final score (now context-aware)
         score = self._calculate_final_score(
             base_score,
             success_impact,
             latency_impact,
             cost_impact,
             risk_level,
-            reversibility
+            reversibility,
+            signals  # Pass signals for context
         )
         
         # Generate reasoning
@@ -328,14 +329,34 @@ class DecisionEngine:
         latency_impact: float,
         cost_impact: float,
         risk_level: RiskLevel,
-        reversibility: float
+        reversibility: float,
+        signals: PaymentSignals
     ) -> float:
-        """Calculate final action score."""
-        # Weight factors
-        success_weight = 0.4
-        latency_weight = 0.3
-        cost_weight = 0.1
-        reversibility_weight = 0.2
+        """
+        Calculate final action score with context-aware risk assessment.
+        
+        When success rate is low, we're more willing to take risks.
+        When success rate is high, we're more conservative.
+        """
+        current_success_rate = signals.overall_success_rate
+        
+        # Context-aware weights
+        # When success rate is low, prioritize success impact more
+        if current_success_rate < 0.75:  # Critical situation
+            success_weight = 0.6  # Boost success impact
+            latency_weight = 0.2
+            cost_weight = 0.05
+            reversibility_weight = 0.15
+        elif current_success_rate < 0.85:  # Degraded situation
+            success_weight = 0.5
+            latency_weight = 0.25
+            cost_weight = 0.1
+            reversibility_weight = 0.15
+        else:  # Normal operation
+            success_weight = 0.4
+            latency_weight = 0.3
+            cost_weight = 0.1
+            reversibility_weight = 0.2
         
         # Normalize impacts to 0-1 range
         success_score = (success_impact + 1) / 2
@@ -344,18 +365,32 @@ class DecisionEngine:
         
         # Calculate weighted score
         score = (
-            base_score * 0.3 +  # Base from reasoning confidence
+            base_score * 0.2 +  # Reduced base weight
             success_score * success_weight +
             latency_score * latency_weight +
             cost_score * cost_weight +
             reversibility * reversibility_weight
         )
         
-        # Apply risk penalty
-        if risk_level == RiskLevel.HIGH:
-            score *= 0.6
-        elif risk_level == RiskLevel.MEDIUM:
-            score *= 0.8
+        # Context-aware risk penalty
+        if current_success_rate < 0.75:
+            # Critical: willing to take more risk
+            if risk_level == RiskLevel.HIGH:
+                score *= 0.8  # Reduced penalty
+            elif risk_level == RiskLevel.MEDIUM:
+                score *= 0.95  # Minimal penalty
+        elif current_success_rate < 0.85:
+            # Degraded: moderate risk tolerance
+            if risk_level == RiskLevel.HIGH:
+                score *= 0.7
+            elif risk_level == RiskLevel.MEDIUM:
+                score *= 0.9
+        else:
+            # Normal: conservative
+            if risk_level == RiskLevel.HIGH:
+                score *= 0.6
+            elif risk_level == RiskLevel.MEDIUM:
+                score *= 0.85
         
         return max(0.0, min(1.0, score))
     
