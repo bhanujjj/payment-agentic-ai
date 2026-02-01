@@ -7,7 +7,7 @@ IMPORTANT: This layer does NOT use LLMs. It uses scoring and logic.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import List, Optional, Dict, Any
 
 from agent.reasoning_models import ReasoningResult
 from agent.signals import PaymentSignals
@@ -23,20 +23,25 @@ class DecisionEngine:
     This is pure control logic - no LLMs, just scoring and constraints.
     """
     
-    def __init__(self, constraints: Optional[DecisionConstraints] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, learner=None):
         """
         Initialize decision engine.
         
         Args:
-            constraints: Decision constraints and guardrails
+            config: Configuration dictionary
+            learner: Optional ActionLearner for learning from past outcomes
         """
-        self.constraints = constraints or DecisionConstraints()
+        self.config = config or {}
+        self.learner = learner
+        self.default_constraints = DecisionConstraints()  # Default constraints
         self.logger = logging.getLogger(__name__)
     
     def decide(
         self,
         reasoning: ReasoningResult,
-        signals: PaymentSignals
+        signals: PaymentSignals,
+        constraints: Optional[DecisionConstraints] = None,
+        learner=None
     ) -> Decision:
         """
         Make a decision based on reasoning and signals.
@@ -44,6 +49,8 @@ class DecisionEngine:
         Args:
             reasoning: Reasoning output from LLM
             signals: Current payment signals
+            constraints: Decision constraints and guardrails (overrides instance constraints)
+            learner: Optional ActionLearner for learning from past outcomes (overrides instance learner)
             
         Returns:
             Decision with selected action and scores
@@ -53,18 +60,73 @@ class DecisionEngine:
         # Generate candidate actions
         candidate_actions = self._generate_candidate_actions(reasoning, signals)
         
-        # Score each action
+        # Use learner from parameter or instance
+        active_learner = learner or self.learner
+        
+        # Score all candidate actions
         scored_actions = []
         for action in candidate_actions:
-            score = self._score_action(action, reasoning, signals)
-            scored_actions.append(score)
+            scored = self._score_action(action, reasoning, signals)
+            
+            # Apply learned adjustments if learner available
+            if active_learner:
+                context = self._summarize_context(signals) # Placeholder for context summarization
+                adjustment = active_learner.get_learned_weight_adjustment(action, context)
+                
+                if adjustment != 1.0:
+                    original_score = scored.score
+                    scored.score *= adjustment
+                    self.logger.info(
+                        f"Learning adjustment for {action}: {adjustment:.2f}x "
+                        f"({original_score:.2f} → {scored.score:.2f})"
+                    )
+            
+            scored_actions.append(scored)
         
         # Apply constraints and select best action
-        decision = self._select_best_action(scored_actions, reasoning)
+        # Use provided constraints if available, otherwise use instance's config (if any)
+        active_constraints = constraints or self.config.get("constraints", DecisionConstraints())
+        decision = self._select_best_action(scored_actions, reasoning, active_constraints)
         
         self.logger.info(f"Decision made: {decision.selected_action} (confidence: {decision.confidence:.0%})")
         
         return decision
+    
+    def _summarize_context(self, signals: PaymentSignals) -> str:
+        """
+        Summarize current context for learning.
+        
+        Args:
+            signals: Payment signals
+            
+        Returns:
+            Context summary string
+        """
+        parts = []
+        
+        # Success rate
+        if signals.overall_success_rate < 0.75:
+            parts.append("low success")
+        elif signals.overall_success_rate > 0.9:
+            parts.append("high success")
+        else:
+            parts.append("moderate success")
+        
+        # Degraded banks
+        if signals.degraded_banks:
+            parts.append(f"{' '.join(signals.degraded_banks)} degraded")
+        
+        # Retries
+        if signals.total_retries > signals.total_payments * 0.3:
+            parts.append("retry storm")
+        elif signals.retry_effectiveness < -0.5:
+            parts.append("ineffective retries")
+        
+        # Latency
+        if signals.avg_latency_ms > 500:
+            parts.append("high latency")
+        
+        return ", ".join(parts) if parts else "normal operation"
     
     def _generate_candidate_actions(
         self,
@@ -95,16 +157,16 @@ class DecisionEngine:
                 continue
             
             if "bank_degradation" in hypothesis or "bank_outage" in hypothesis:
-                if self.constraints.allow_rerouting:
+                if self.default_constraints.allow_rerouting:
                     actions.append(ActionType.RECOMMEND_REROUTE.value)
-                if self.constraints.allow_path_suppression:
+                if self.default_constraints.allow_path_suppression:
                     actions.append(ActionType.RECOMMEND_PATH_SUPPRESSION.value)
             
             if "retry_storm" in hypothesis:
                 actions.append(ActionType.RECOMMEND_RETRY_REDUCTION.value)
             
             if "network_issues" in hypothesis or "peak_load" in hypothesis:
-                if self.constraints.allow_circuit_breaker:
+                if self.default_constraints.allow_circuit_breaker:
                     actions.append(ActionType.RECOMMEND_CIRCUIT_BREAKER.value)
                 actions.append(ActionType.RECOMMEND_RATE_LIMIT.value)
         
@@ -278,13 +340,13 @@ class DecisionEngine:
             return RiskLevel.LOW
         
         # High risk if negative impacts exceed thresholds
-        if success_impact < -self.constraints.max_allowed_success_rate_drop:
+        if success_impact < -self.default_constraints.max_allowed_success_rate_drop:
             return RiskLevel.HIGH
         
-        if latency_impact < -self.constraints.max_allowed_latency_increase:
+        if latency_impact < -self.default_constraints.max_allowed_latency_increase:
             return RiskLevel.HIGH
         
-        if cost_impact < -self.constraints.max_allowed_cost_increase:
+        if cost_impact < -self.default_constraints.max_allowed_cost_increase:
             return RiskLevel.HIGH
         
         # Medium risk for infrastructure changes
@@ -422,7 +484,8 @@ class DecisionEngine:
     def _select_best_action(
         self,
         scored_actions: List[ActionScore],
-        reasoning: ReasoningResult
+        reasoning: ReasoningResult,
+        constraints: Optional[DecisionConstraints] = None
     ) -> Decision:
         """
         Select best action applying constraints.
@@ -430,10 +493,14 @@ class DecisionEngine:
         Args:
             scored_actions: List of scored actions
             reasoning: Original reasoning
+            constraints: Optional constraints (uses default if not provided)
             
         Returns:
             Final decision
         """
+        # Use provided constraints or create default
+        active_constraints_obj = constraints or DecisionConstraints()
+        
         # Sort by score
         sorted_actions = sorted(scored_actions, key=lambda x: x.score, reverse=True)
         
@@ -445,19 +512,19 @@ class DecisionEngine:
         selected = None
         for action in sorted_actions:
             # Check minimum confidence
-            if action.score < self.constraints.min_confidence_for_action:
-                rejected[action.action] = f"Score {action.score:.0%} below minimum {self.constraints.min_confidence_for_action:.0%}"
+            if action.score < self.default_constraints.min_confidence_for_action:
+                rejected[action.action] = f"Score {action.score:.0%} below minimum {self.default_constraints.min_confidence_for_action:.0%}"
                 continue
             
             # Check risk level
             if action.risk_level.value == RiskLevel.HIGH.value:
-                if self.constraints.max_auto_approve_risk.value != RiskLevel.HIGH.value:
+                if self.default_constraints.max_auto_approve_risk.value != RiskLevel.HIGH.value:
                     # Can still select but requires approval
                     pass
             
             # Check reversibility for high risk actions
             if action.risk_level in [RiskLevel.HIGH, RiskLevel.MEDIUM]:
-                if action.reversibility < self.constraints.min_reversibility_for_high_risk:
+                if action.reversibility < self.default_constraints.min_reversibility_for_high_risk:
                     rejected[action.action] = f"Reversibility {action.reversibility:.0%} too low for {action.risk_level.value} risk"
                     continue
             
@@ -480,7 +547,7 @@ class DecisionEngine:
         requires_approval = (
             selected.risk_level.value == RiskLevel.HIGH.value or
             (selected.risk_level.value == RiskLevel.MEDIUM.value and
-             self.constraints.max_auto_approve_risk.value == RiskLevel.LOW.value)
+             self.default_constraints.max_auto_approve_risk.value == RiskLevel.LOW.value)
         )
         
         # Generate reasoning summary
