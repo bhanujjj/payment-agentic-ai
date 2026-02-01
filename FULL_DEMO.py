@@ -343,47 +343,77 @@ This demo shows a complete autonomous agent that:
     input("\nPress ENTER to measure the impact...")
     
     # ========================================================================
-    # POST-ACTION MEASUREMENT
+    # POST-ACTION MEASUREMENT (CAUSALITY-AWARE)
     # ========================================================================
     
     print_section("Measuring Impact (Post-Action)")
     
-    print("\n  Generating new payment traffic with updated config...")
-    gen2 = PaymentGenerator(config={'seed': 43})
-    payments_post = gen2.generate_batch(count=200, time_span_seconds=300)
-    
-    # Fewer retries after adjustment
-    retry_payments_post = []
-    for payment in payments_post[:20]:  # Reduced from 50
-        if payment.is_failed():
-            retries = gen2.simulate_retry_storm(payment, retry_count=2)  # Reduced from 5
-            retry_payments_post.extend(retries)
-    
-    all_payments_post = payments_post + retry_payments_post
-    
-    post_signals = engine.compute_signals(all_payments_post)
-    
-    print("\n  Performance Comparison:")
-    print_delta("Success Rate", 
-                pre_signals.overall_success_rate, 
-                post_signals.overall_success_rate, 
-                unit="%", 
-                better_lower=False)
-    print_delta("Latency", 
-                pre_signals.avg_latency_ms, 
-                post_signals.avg_latency_ms, 
-                unit="ms", 
-                better_lower=True)
-    print_delta("Retry Count", 
-                pre_signals.total_retries, 
-                post_signals.total_retries, 
-                unit="", 
-                better_lower=True)
-    print_delta("Error Rate", 
-                pre_signals.overall_failure_rate, 
-                post_signals.overall_failure_rate, 
-                unit="%", 
-                better_lower=True)
+    # IMPORTANT: For do_nothing, we should NOT generate new traffic
+    # because that would show random variance, not action impact
+    if decision.selected_action in ['do_nothing', 'alert_ops']:
+        print("\n  ℹ️  Non-intervention action: Using same traffic for comparison")
+        print("     (Generating new traffic would show random variance, not action impact)")
+        
+        # Use the SAME traffic - no changes expected
+        post_signals = pre_signals
+        
+        print("\n  Performance Comparison:")
+        print_metric("Success Rate", f"{post_signals.overall_success_rate:.1%} (unchanged)")
+        print_metric("Latency", f"{post_signals.avg_latency_ms:.0f}ms (unchanged)")
+        print_metric("Retry Count", f"{post_signals.total_retries} (unchanged)")
+        print_metric("Error Rate", f"{post_signals.overall_failure_rate:.1%} (unchanged)")
+        
+        print("\n  ✅ Metrics unchanged (as expected - agent did not intervene)")
+        
+    else:
+        # For intervention actions, generate new traffic to measure impact
+        print("\n  Generating new payment traffic with updated config...")
+        gen2 = PaymentGenerator(config={'seed': 43})
+        payments_post = gen2.generate_batch(count=200, time_span_seconds=300)
+        
+        # Adjust retry simulation based on action taken
+        retry_payments_post = []
+        if decision.selected_action == 'recommend_retry_adjustment':
+            # Simulate proportional retry reduction
+            # Config changed from 3→2 max retries (~33% reduction)
+            # So reduce retry storm intensity proportionally
+            # Before: 50 payments with 5 retries each
+            # After: 35 payments with 3 retries each (~30% reduction)
+            for payment in payments_post[:35]:  # Reduced from 50 (30% fewer)
+                if payment.is_failed():
+                    retries = gen2.simulate_retry_storm(payment, retry_count=3)  # Reduced from 5
+                    retry_payments_post.extend(retries)
+        else:
+            # Normal retry pattern for other actions
+            for payment in payments_post[:25]:
+                if payment.is_failed():
+                    retries = gen2.simulate_retry_storm(payment, retry_count=3)
+                    retry_payments_post.extend(retries)
+        
+        all_payments_post = payments_post + retry_payments_post
+        post_signals = engine.compute_signals(all_payments_post)
+        
+        print("\n  Performance Comparison:")
+        print_delta("Success Rate", 
+                    pre_signals.overall_success_rate, 
+                    post_signals.overall_success_rate, 
+                    unit="%", 
+                    better_lower=False)
+        print_delta("Latency", 
+                    pre_signals.avg_latency_ms, 
+                    post_signals.avg_latency_ms, 
+                    unit="ms", 
+                    better_lower=True)
+        print_delta("Retry Count", 
+                    pre_signals.total_retries, 
+                    post_signals.total_retries, 
+                    unit="", 
+                    better_lower=True)
+        print_delta("Error Rate", 
+                    pre_signals.overall_failure_rate, 
+                    post_signals.overall_failure_rate, 
+                    unit="%", 
+                    better_lower=True)
     
     input("\nPress ENTER to evaluate the outcome...")
     
@@ -400,7 +430,13 @@ This demo shows a complete autonomous agent that:
     print_metric("Outcome", outcome_class.value)
     print_metric("Score", f"{outcome_score:.2f} / 1.00")
     
-    if outcome_class.value == "SUCCESS":
+    # Causality-aware outcome explanation
+    if decision.selected_action in ['do_nothing', 'alert_ops']:
+        print_metric("Reason", "No intervention applied; changes not attributed to agent")
+        print("\n  ⚖️  NEUTRAL outcome (causality-safe)")
+        print("     Metric changes may be due to natural variance.")
+        print("     Agent did not intervene, so cannot claim credit or blame.")
+    elif outcome_class.value == "SUCCESS":
         print("\n  🎉 Action was SUCCESSFUL! System performance improved.")
     elif outcome_class.value == "FAILURE":
         print("\n  ❌ Action FAILED. System performance degraded.")
@@ -410,89 +446,112 @@ This demo shows a complete autonomous agent that:
     input("\nPress ENTER to store this experience...")
     
     # ========================================================================
-    # LEARNING & MEMORY
+    # LEARNING & MEMORY (CAUSALITY-SAFE)
     # ========================================================================
     
     print_section("Learning & Memory Storage")
     
-    context = decider._summarize_context(pre_signals)
+    # Check if this is a learning event
+    is_intervention = decision.selected_action not in ['do_nothing', 'alert_ops']
     
-    outcome = ActionOutcome(
-        context_summary=context,
-        action=decision.selected_action,
-        risk_level=decision.risk_level.value,
-        pre_success_rate=pre_signals.overall_success_rate,
-        pre_latency_ms=pre_signals.avg_latency_ms,
-        pre_retry_count=pre_signals.total_retries,
-        pre_error_rate=pre_signals.overall_failure_rate,
-        post_success_rate=post_signals.overall_success_rate,
-        post_latency_ms=post_signals.avg_latency_ms,
-        post_retry_count=post_signals.total_retries,
-        post_error_rate=post_signals.overall_failure_rate,
-        success_rate_delta=post_signals.overall_success_rate - pre_signals.overall_success_rate,
-        latency_delta=post_signals.avg_latency_ms - pre_signals.avg_latency_ms,
-        retry_delta=post_signals.total_retries - pre_signals.total_retries,
-        error_rate_delta=post_signals.overall_failure_rate - pre_signals.overall_failure_rate,
-        outcome=outcome_class,
-        outcome_score=outcome_score,
-        timestamp=datetime.now(),
-        notes="Full demo - first iteration"
-    )
-    
-    memory.add(outcome)
-    
-    print_metric("Memory Stored", "✓ Success")
-    print_metric("Context", context)
-    print_metric("Action", outcome.action)
-    print_metric("Outcome", outcome.outcome.value)
-    
-    input("\nPress ENTER to see how learning affects future decisions...")
-    
-    # ========================================================================
-    # SCENARIO 2: LEARNING IN ACTION
-    # ========================================================================
-    
-    print_header("🧠 SCENARIO 2: LEARNING IN ACTION")
-    
-    print_section("Similar Crisis Occurs Again")
-    
-    print("\n  Generating similar retry storm scenario...")
-    gen3 = PaymentGenerator(config={'seed': 44})
-    payments_new = gen3.generate_batch(count=200, time_span_seconds=300)
-    retry_payments_new = []
-    for payment in payments_new[:50]:
-        if payment.is_failed():
-            retries = gen3.simulate_retry_storm(payment, retry_count=5)
-            retry_payments_new.extend(retries)
-    
-    all_payments_new = payments_new + retry_payments_new
-    signals_new = engine.compute_signals(all_payments_new)
-    
-    print_metric("Success Rate", f"{signals_new.overall_success_rate:.1%}")
-    print_metric("Retry Count", signals_new.total_retries)
-    
-    print("\n  Running AI reasoning...")
-    reasoning_new = await reasoner.reason(signals_new)
-    
-    print("\n  Making decision WITH learning...")
-    decision_new = decider.decide(reasoning_new, signals_new)
-    
-    print_metric("Selected Action", decision_new.selected_action)
-    print_metric("Confidence", f"{decision_new.confidence:.0%}")
-    
-    # Show learning stats
-    stats = memory.get_action_stats("recommend_retry_adjustment")
-    if stats:
-        print("\n  📊 Learning Data:")
-        print_metric("Past Observations", stats.total_observations)
-        print_metric("Success Rate", f"{stats.success_rate:.0%}")
-        print_metric("Avg Outcome Score", f"{stats.avg_outcome_score:.2f}")
+    if not is_intervention:
+        print("\n  ℹ️  Non-intervention action detected")
+        print_metric("Action", decision.selected_action)
+        print_metric("Learning Update", "SKIPPED (causality-safe)")
+        print("\n  Reason: Agent did not intervene, so no learning reinforcement applied.")
+        print("  Metric changes are natural variance, not caused by agent action.")
+        print("\n  ✅ Causality-safe learning applied for do_nothing action.")
+    else:
+        # Store learning for intervention actions only
+        context = decider._summarize_context(pre_signals)
         
-        if stats.success_rate > 0.7:
-            print("\n  💡 Agent learned: This action works well in similar situations!")
-            print("     Future decisions will favor this action.")
+        outcome = ActionOutcome(
+            context_summary=context,
+            action=decision.selected_action,
+            risk_level=decision.risk_level.value,
+            pre_success_rate=pre_signals.overall_success_rate,
+            pre_latency_ms=pre_signals.avg_latency_ms,
+            pre_retry_count=pre_signals.total_retries,
+            pre_error_rate=pre_signals.overall_failure_rate,
+            post_success_rate=post_signals.overall_success_rate,
+            post_latency_ms=post_signals.avg_latency_ms,
+            post_retry_count=post_signals.total_retries,
+            post_error_rate=post_signals.overall_failure_rate,
+            success_rate_delta=post_signals.overall_success_rate - pre_signals.overall_success_rate,
+            latency_delta=post_signals.avg_latency_ms - pre_signals.avg_latency_ms,
+            retry_delta=post_signals.total_retries - pre_signals.total_retries,
+            error_rate_delta=post_signals.overall_failure_rate - pre_signals.overall_failure_rate,
+            outcome=outcome_class,
+            outcome_score=outcome_score,
+            timestamp=datetime.now(),
+            notes=f"Full demo - {scenario_mode} scenario"
+        )
+        
+        memory.add(outcome)
+        
+        print_metric("Memory Stored", "✓ Success")
+        print_metric("Context", context)
+        print_metric("Action", outcome.action)
+        print_metric("Outcome", outcome.outcome.value)
     
-    input("\nPress ENTER to see the complete summary...")
+    # Skip second iteration for non-intervention actions (no learning to show)
+    if not is_intervention:
+        input("\nPress ENTER to see the final summary...")
+    else:
+        input("\nPress ENTER to see how learning affects future decisions...")
+        
+        # ====================================================================
+        # SCENARIO 2: LEARNING IN ACTION (INTERVENTION ACTIONS ONLY)
+        # ====================================================================
+        
+        print_header("🧠 SCENARIO 2: LEARNING IN ACTION")
+        
+        print_section("Similar Crisis Occurs Again")
+        
+        print("\n  Generating similar scenario...")
+        gen3 = PaymentGenerator(config={'seed': 44})
+        payments_new = gen3.generate_batch(count=200, time_span_seconds=300)
+        retry_payments_new = []
+        
+        if scenario_mode == 'RETRY_ADJUSTMENT':
+            for payment in payments_new[:50]:
+                if payment.is_failed():
+                    retries = gen3.simulate_retry_storm(payment, retry_count=5)
+                    retry_payments_new.extend(retries)
+        else:
+            for payment in payments_new[:25]:
+                if payment.is_failed():
+                    retries = gen3.simulate_retry_storm(payment, retry_count=3)
+                    retry_payments_new.extend(retries)
+        
+        all_payments_new = payments_new + retry_payments_new
+        signals_new = engine.compute_signals(all_payments_new)
+        
+        print_metric("Success Rate", f"{signals_new.overall_success_rate:.1%}")
+        print_metric("Retry Count", signals_new.total_retries)
+        
+        print("\n  Running AI reasoning...")
+        reasoning_new = await reasoner.reason(signals_new)
+        
+        print("\n  Making decision WITH learning...")
+        decision_new = decider.decide(reasoning_new, signals_new)
+        
+        print_metric("Selected Action", decision_new.selected_action)
+        print_metric("Confidence", f"{decision_new.confidence:.0%}")
+        
+        # Show learning stats
+        stats = memory.get_action_stats(decision.selected_action)
+        if stats:
+            print("\n  📊 Learning Data:")
+            print_metric("Past Observations", stats.total_observations)
+            print_metric("Success Rate", f"{stats.success_rate:.0%}")
+            print_metric("Avg Outcome Score", f"{stats.avg_outcome_score:.2f}")
+            
+            if stats.success_rate > 0.7:
+                print("\n  💡 Agent learned: This action works well in similar situations!")
+                print("     Future decisions will favor this action.")
+        
+        input("\nPress ENTER to see the complete summary...")
     
     # ========================================================================
     # FINAL SUMMARY
@@ -571,12 +630,24 @@ DEMONSTRATED CAPABILITIES:
     print(f"  • Action Executed: {execution_result.status.value}")
     print(f"  • Config Changed: {'Yes' if config_changed else 'No'}")
     print(f"  • Outcome: {outcome_class.value}")
-    print(f"  • Learning: Active")
+    
+    if is_intervention:
+        print(f"  • Learning: Active ({memory.get_summary()['total']} observations)")
+    else:
+        print(f"  • Learning: Skipped (causality-safe for {decision.selected_action})")
+    
     print("\n🎯 HONEST AGENT BEHAVIOR:")
     print("   ✓ No forced actions")
     print("   ✓ No decision overrides")
     print("   ✓ Scenario only controlled initial conditions")
     print("   ✓ Agent logic remained unchanged")
+    
+    print("\n🧠 CAUSALITY-SAFE LEARNING:")
+    print("   ✓ Non-intervention actions (do_nothing, alert_ops) → NEUTRAL outcome")
+    print("   ✓ No false attribution of metric changes")
+    print("   ✓ Learning only from actual interventions")
+    print("   ✓ Natural variance not credited to agent")
+    
     print("\nThank you for watching the Payment Routing Agent demonstration!")
     print("=" * 100 + "\n")
 

@@ -164,7 +164,16 @@ class DecisionEngine:
             
             if "retry_storm" in hypothesis:
                 actions.append(ActionType.RECOMMEND_RETRY_REDUCTION.value)
-            
+        
+        # Add retry_adjustment if retries are high or ineffective
+        # This is a key action for retry storm scenarios
+        if signals.total_retries > 5 or signals.retry_effectiveness < 0:
+            actions.append('recommend_retry_adjustment')
+        
+        # Add circuit breaker/rate limit for network/load issues
+        for hypothesis, confidence in top_hypotheses:
+            if confidence < 0.3:
+                continue
             if "network_issues" in hypothesis or "peak_load" in hypothesis:
                 if self.default_constraints.allow_circuit_breaker:
                     actions.append(ActionType.RECOMMEND_CIRCUIT_BREAKER.value)
@@ -256,6 +265,17 @@ class DecisionEngine:
             # Suppressing bad paths improves success rate
             return 0.2
         
+        if action == 'recommend_retry_adjustment':
+            # Retry adjustment helps when retries are ineffective
+            # High retry count + low effectiveness = strong benefit
+            if signals.retry_effectiveness < -0.5 and signals.total_retries > 10:
+                return 0.4  # Strong improvement expected
+            elif signals.retry_effectiveness < 0 and signals.total_retries > 5:
+                return 0.25  # Moderate improvement
+            elif signals.total_retries > 10:
+                return 0.15  # Some improvement
+            return 0.05  # Minimal impact
+        
         if action == ActionType.RECOMMEND_RETRY_REDUCTION.value:
             # Reducing retries may slightly lower success rate
             return -0.05
@@ -285,6 +305,15 @@ class DecisionEngine:
         if action == ActionType.RECOMMEND_PATH_SUPPRESSION.value:
             # Suppressing slow paths improves latency
             return 0.2
+        
+        if action == 'recommend_retry_adjustment':
+            # Reducing retries significantly improves latency
+            # More retries = more latency savings
+            if signals.total_retries > 10:
+                return 0.35  # Strong latency improvement
+            elif signals.total_retries > 5:
+                return 0.25  # Moderate improvement
+            return 0.1  # Some improvement
         
         if action == ActionType.RECOMMEND_RETRY_REDUCTION.value:
             # Fewer retries = lower latency

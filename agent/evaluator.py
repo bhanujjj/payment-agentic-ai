@@ -112,6 +112,8 @@ class OutcomeEvaluator:
         """
         Evaluate from PaymentSignals objects.
         
+        IMPORTANT: Handles causality correctly for non-intervention actions.
+        
         Args:
             pre_signals: PaymentSignals before action
             post_signals: PaymentSignals after action
@@ -120,6 +122,19 @@ class OutcomeEvaluator:
         Returns:
             (outcome_classification, outcome_score)
         """
+        # CAUSALITY CHECK: Non-intervention actions cannot claim credit
+        # do_nothing and alert_ops do not modify system state
+        # Any metric changes are due to natural variance, not agent action
+        if action in ['do_nothing', 'alert_ops']:
+            self.logger.info(
+                f"Outcome evaluation: NEUTRAL (non-intervention action: {action})"
+            )
+            self.logger.info(
+                "Reason: No intervention applied; metric changes not attributed to agent"
+            )
+            return OutcomeClassification.NEUTRAL, 0.5
+        
+        # For intervention actions, proceed with normal evaluation
         pre_metrics = {
             'success_rate': pre_signals.overall_success_rate,
             'latency_ms': pre_signals.avg_latency_ms,
