@@ -3,7 +3,7 @@
 ## ✅ API Key Status: WORKING
 
 ### Configuration
-- **API Key**: `AIzaSyA_4xdo_ExlThld...H24I` (39 characters)
+ (39 characters)
 - **Model**: `gemini-2.5-flash`
 - **Location**: `.env` file
 
