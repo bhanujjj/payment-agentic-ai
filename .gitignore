@@ -42,6 +42,8 @@ htmlcov/
 
 # Data
 data/memory/*.json
+data/memory/*.db
+*.db
 data/logs/*.log
 
 # OS

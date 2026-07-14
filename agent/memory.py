@@ -34,8 +34,45 @@ class ActionMemory:
         # Create directory if needed
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # SQLite db path resolve
+        db_path = str(storage_path)
+        if db_path.endswith('.json'):
+            db_path = db_path.replace('.json', '.db')
+        
+        import sqlite3
+        self.conn = sqlite3.connect(db_path)
+        self._init_db()
+        
         # Load existing memories
         self.load()
+        
+    def _init_db(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS action_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_summary TEXT,
+                action TEXT,
+                risk_level TEXT,
+                pre_success_rate REAL,
+                pre_latency_ms REAL,
+                pre_retry_count INTEGER,
+                pre_error_rate REAL,
+                post_success_rate REAL,
+                post_latency_ms REAL,
+                post_retry_count INTEGER,
+                post_error_rate REAL,
+                success_rate_delta REAL,
+                latency_delta REAL,
+                retry_delta INTEGER,
+                error_rate_delta REAL,
+                outcome TEXT,
+                outcome_score REAL,
+                timestamp TEXT,
+                notes TEXT
+            )
+        """)
+        self.conn.commit()
     
     def add(self, outcome: ActionOutcome):
         """
@@ -45,13 +82,30 @@ class ActionMemory:
             outcome: ActionOutcome to store
         """
         self.memories.append(outcome)
-        self.logger.info(
-            f"Stored outcome: {outcome.action} → {outcome.outcome.value} "
-            f"(score: {outcome.outcome_score:.2f})"
-        )
-        
-        # Auto-save
-        self.save()
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO action_memories (
+                    context_summary, action, risk_level,
+                    pre_success_rate, pre_latency_ms, pre_retry_count, pre_error_rate,
+                    post_success_rate, post_latency_ms, post_retry_count, post_error_rate,
+                    success_rate_delta, latency_delta, retry_delta, error_rate_delta,
+                    outcome, outcome_score, timestamp, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                outcome.context_summary, outcome.action, outcome.risk_level,
+                outcome.pre_success_rate, outcome.pre_latency_ms, outcome.pre_retry_count, outcome.pre_error_rate,
+                outcome.post_success_rate, outcome.post_latency_ms, outcome.post_retry_count, outcome.post_error_rate,
+                outcome.success_rate_delta, outcome.latency_delta, outcome.retry_delta, outcome.error_rate_delta,
+                outcome.outcome.value, outcome.outcome_score, outcome.timestamp.isoformat(), outcome.notes
+            ))
+            self.conn.commit()
+            self.logger.info(
+                f"Stored outcome in SQLite: {outcome.action} → {outcome.outcome.value} "
+                f"(score: {outcome.outcome_score:.2f})"
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to save SQLite memory: {e}")
     
     def get_all(self) -> List[ActionOutcome]:
         """Get all stored outcomes."""
@@ -143,45 +197,63 @@ class ActionMemory:
         )
     
     def save(self):
-        """Persist memories to JSON file."""
-        try:
-            data = {
-                'version': '1.0',
-                'saved_at': datetime.utcnow().isoformat(),
-                'memories': [m.to_dict() for m in self.memories]
-            }
-            
-            with open(self.storage_path, 'w') as f:
-                json.dump(data, f, indent=2)
-            
-            self.logger.debug(f"Saved {len(self.memories)} memories to {self.storage_path}")
-        except Exception as e:
-            self.logger.error(f"Failed to save memories: {e}")
+        """No-op for SQLite since add() performs SQL persistence."""
+        pass
     
     def load(self):
-        """Load memories from JSON file."""
-        if not self.storage_path.exists():
-            self.logger.info("No existing memory file found. Starting fresh.")
-            return
-        
+        """Load memories from SQLite database."""
         try:
-            with open(self.storage_path, 'r') as f:
-                data = json.load(f)
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM action_memories")
+            rows = cursor.fetchall()
             
-            self.memories = [
-                ActionOutcome.from_dict(m) for m in data.get('memories', [])
-            ]
-            
-            self.logger.info(f"Loaded {len(self.memories)} memories from {self.storage_path}")
+            self.memories = []
+            for r in rows:
+                from datetime import datetime
+                outcome = ActionOutcome(
+                    context_summary=r[1],
+                    action=r[2],
+                    risk_level=r[3],
+                    pre_success_rate=r[4],
+                    pre_latency_ms=r[5],
+                    pre_retry_count=r[6],
+                    pre_error_rate=r[7],
+                    post_success_rate=r[8],
+                    post_latency_ms=r[9],
+                    post_retry_count=r[10],
+                    post_error_rate=r[11],
+                    success_rate_delta=r[12],
+                    latency_delta=r[13],
+                    retry_delta=r[14],
+                    error_rate_delta=r[15],
+                    outcome=OutcomeClassification(r[16]),
+                    outcome_score=r[17],
+                    timestamp=datetime.fromisoformat(r[18]),
+                    notes=r[19]
+                )
+                self.memories.append(outcome)
+            self.logger.info(f"Loaded {len(self.memories)} memories from SQLite")
         except Exception as e:
-            self.logger.error(f"Failed to load memories: {e}")
+            self.logger.error(f"Failed to load SQLite memories: {e}")
             self.memories = []
     
     def clear(self):
-        """Clear all memories."""
+        """Clear all memories from SQLite database."""
         self.memories = []
-        self.save()
-        self.logger.info("Cleared all memories")
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM action_memories")
+            self.conn.commit()
+            self.logger.info("Cleared all memories from SQLite")
+        except Exception as e:
+            self.logger.error(f"Failed to clear SQLite memories: {e}")
+            
+    def __del__(self):
+        if hasattr(self, 'conn') and self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
     
     def get_summary(self) -> Dict[str, Any]:
         """Get summary statistics."""

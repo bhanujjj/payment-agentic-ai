@@ -170,14 +170,17 @@ class ActionExecutor:
         signals: PaymentSignals
     ) -> ExecutionResult:
         """Execute recommend_reroute action."""
-        self.logger.info("Action: recommend_reroute - updating routing")
+        self.logger.info("Action: recommend_reroute - updating routing state")
         
         # Identify banks to reroute from
         affected_banks = signals.degraded_banks or []
         
-        # Update routing overrides
+        # Update dynamic routing config state
+        from simulation.routing_config import ROUTING_STATE
         for bank in affected_banks:
             self.system_state.routing_overrides[bank] = "rerouted"
+            if bank in ROUTING_STATE["active_banks"]:
+                ROUTING_STATE["active_banks"].remove(bank)
         
         self.system_state.last_action = "recommend_reroute"
         self.system_state.last_updated = datetime.utcnow()
@@ -201,14 +204,17 @@ class ActionExecutor:
         signals: PaymentSignals
     ) -> ExecutionResult:
         """Execute recommend_path_suppression action."""
-        self.logger.info("Action: recommend_path_suppression - suppressing paths")
+        self.logger.info("Action: recommend_path_suppression - suppressing paths in state")
         
         # Identify banks to suppress
         affected_banks = signals.degraded_banks or []
         
-        # Update routing overrides
+        # Update dynamic routing config state
+        from simulation.routing_config import ROUTING_STATE
         for bank in affected_banks:
             self.system_state.routing_overrides[bank] = "suppressed"
+            if bank not in ROUTING_STATE["suppressed_banks"]:
+                ROUTING_STATE["suppressed_banks"].append(bank)
         
         self.system_state.last_action = "recommend_path_suppression"
         self.system_state.last_updated = datetime.utcnow()
@@ -232,13 +238,16 @@ class ActionExecutor:
         signals: PaymentSignals
     ) -> ExecutionResult:
         """Execute recommend_circuit_breaker action."""
-        self.logger.info("Action: recommend_circuit_breaker - enabling breakers")
+        self.logger.info("Action: recommend_circuit_breaker - enabling breakers in state")
         
         # Enable circuit breakers for degraded banks
         affected_banks = signals.degraded_banks or []
         
+        from simulation.routing_config import ROUTING_STATE
         for bank in affected_banks:
             self.system_state.circuit_breakers[bank] = True
+            if bank not in ROUTING_STATE["suppressed_banks"]:
+                ROUTING_STATE["suppressed_banks"].append(bank)  # Suppress traffic
         
         self.system_state.last_action = "recommend_circuit_breaker"
         self.system_state.last_updated = datetime.utcnow()
@@ -262,16 +271,21 @@ class ActionExecutor:
         signals: PaymentSignals
     ) -> ExecutionResult:
         """Execute recommend_retry_adjustment action."""
-        self.logger.info("Action: recommend_retry_adjustment - adjusting retries")
+        self.logger.info("Action: recommend_retry_adjustment - adjusting retries in state")
         
+        from simulation.routing_config import ROUTING_STATE
         # Reduce retries if retry storm detected
-        if signals.total_retries > signals.total_payments * 0.5:
-            # High retry rate - reduce
+        if signals.total_retries > signals.total_payments * 0.3:
+            # High retry rate - reduce to 1 retry max
             self.system_state.retry_policy["max_retries"] = 1
+            for method in ["UPI", "CARD", "NETBANKING", "WALLET"]:
+                ROUTING_STATE["retry_limits"][method] = 1
             effect = "Reduced max retries to 1 to prevent retry storm"
         else:
-            # Normal - keep conservative
+            # Normal - keep moderate (2 retries max)
             self.system_state.retry_policy["max_retries"] = 2
+            for method in ["UPI", "CARD", "NETBANKING", "WALLET"]:
+                ROUTING_STATE["retry_limits"][method] = 2
             effect = "Set max retries to 2 for balanced reliability"
         
         self.system_state.last_action = "recommend_retry_adjustment"

@@ -1,267 +1,144 @@
-# 🚀 Payment Routing Agent
+# 🚀 Closed-Loop Autonomous Payment Routing AI Agent
 
-## Complete Autonomous Payment System
-
-A production-grade autonomous agent that monitors payment system health, detects issues using AI, makes intelligent decisions, executes safe actions, and learns from outcomes.
+A production-grade, risk-aware **Closed-Loop Autonomous Routing System** that monitors real-time payment network performance, diagnoses failures using generative LLMs (Gemini-2.5-flash), executes config-level routing mitigations, and leverages persistent reinforcement learning (via SQLite) to continuously optimize routing decisions.
 
 ---
 
-## 🎯 Quick Demo (For Judges)
+## 📊 Live Web Control Dashboard & UI Demo
 
-### Run the Complete Interactive Demo
+The system features an interactive single-process React control dashboard powered by a FastAPI backend. You can inject outages, view live comparative recovery charts, check real-time routing config state, and audit SQLite database memory logs.
 
 ```bash
-PYTHONPATH=. python FULL_DEMO.py
+# Start the FastAPI + React Control Dashboard Server
+python dashboard_server.py
 ```
+Open **[http://localhost:8000/](http://localhost:8000/)** in your browser to view the interface:
 
-**What it shows**:
-- ✅ Payment simulation with retry storm
-- ✅ AI-powered reasoning (Gemini 2.5 Flash)
-- ✅ Intelligent decision making
-- ✅ Runtime configuration changes
-- ✅ Impact measurement (+13% success rate improvement)
-- ✅ Learning from outcomes
-
-**Duration**: ~5 minutes (interactive, press ENTER to advance)
+*   **Scenario Panel:** Inject healthy traffic, specific bank degradations, outages, UPI retry storms, or multiple simultaneous failures.
+*   **Performance Recovery Chart:** Real-time side-by-side comparison of success rates and latencies before and after the agent intervenes.
+*   **Dynamic Gateway Status:** Real-time view of suppressed and active gateways.
+*   **LLM Reasoner Logs:** Verbatim diagnostic outputs, primary hypothesis confidence scores, and reasoning explanations.
+*   **SQLite Memories Log:** Full historical table of past experiences queried dynamically from the SQLite datastore.
 
 ---
 
-## 📊 System Architecture
+## 📈 System Metrics & Validation Results
 
-```
-Observe → Reason → Decide → Execute → Measure → Evaluate → Learn → Improve
-   ↑                                                                    ↓
-   └────────────────────────────────────────────────────────────────────┘
-                        Complete Agentic Loop
-```
+We executed a comprehensive 5-scenario multi-run validation suite (simulating **10 transaction windows** and **1,690 transaction events**) to measure diagnosis accuracy, recovery times, and metric transitions:
 
-### Components
-
-1. **Simulation Layer** - Realistic payment data generation
-2. **Metrics Engine** - Real-time performance monitoring
-3. **AI Reasoning** - Gemini 2.5 Flash for hypothesis generation
-4. **Decision Engine** - Context-aware action selection
-5. **Action Executor** - Safe runtime configuration changes
-6. **Outcome Evaluator** - Success/failure classification
-7. **Learning System** - Memory-based decision improvement
+| Metric | Baseline (Outage) | Post-Intervention (Healed) | Delta / Outcome |
+| :--- | :---: | :---: | :---: |
+| **Transaction Success Rate** | **43.2%** | **97.5%** | **+54.3%** |
+| **Transaction Failure Rate** | **56.8%** | **2.5%** | **-54.3%** (95.6% drop) |
+| **Average Transaction Latency** | **10,318 ms** | **410 ms** | **-9,908 ms** reduction |
+| **System Stabilization Speed** | — | — | **1 decision cycle (~5 min)** |
+| **Problem Diagnosis Accuracy** | — | — | **60% (3/5 scenarios)** |
+| **Average LLM Diagnosis Confidence** | — | — | **71.7%** |
+| **Total Processed Transactions** | — | — | **1,690 simulated events** |
 
 ---
 
-## 🚀 Getting Started
+## 🌀 Closed-Loop Architecture
 
-### Prerequisites
+The system operates on a continuous, five-stage **Observe-Reason-Decide-Act-Learn** loop:
 
+```mermaid
+graph TD
+    subgraph Observable Environment
+        A[Payment Ingestion Logs] -->|Compute Signals| B[MetricsEngine]
+    end
+
+    subgraph Cognitive Reasoning
+        B -->|Anomaly Trigger| C[Gemini Reasoner]
+        C -->|Scored Hypotheses| D[DecisionEngine]
+        D -->|Evaluate Constraints & Risk| E[Decision Output]
+    end
+
+    subgraph Closed-Loop Action
+        E -->|Execution Command| F[ActionExecutor]
+        F -->|Real-Time Config Overrides| G[ROUTING_STATE]
+        G -->|Dynamic Rerouting/Capping| A
+    end
+
+    subgraph Feedback Loop
+        A -->|Post-Metrics Logs| H[OutcomeEvaluator]
+        H -->|SUCCESS/FAILURE Classify| I[ActionLearner]
+        I -->|Weight Adjustments| D
+        I -->|Structured Insert| J[(SQLite database)]
+    end
+
+    style E fill:#4f46e5,stroke:#312e81,stroke-width:2px,color:#fff
+    style G fill:#059669,stroke:#065f46,stroke-width:2px,color:#fff
+    style J fill:#7c3aed,stroke:#5b21b6,stroke-width:2px,color:#fff
+```
+
+---
+
+## 🛠️ Component Breakdown
+
+### 1. Real-Time Ingest & Metrics Engine
+*   **File:** [metrics.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/metrics.py)
+*   Computes key performance indicators (KPIs) like success rate, latency (avg, p95), failure rate, and retry counts.
+*   Calculates **Retry Effectiveness** to detect when excessive client-side retries are causing gateway load instead of resolving failures.
+
+### 2. Multi-Hypothesis Diagnostic Reasoner
+*   **File:** [reasoner.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/reasoner.py)
+*   Uses generative AI (`gemini-2.5-flash`) to analyze signals, identify degraded gateways, and explain root causes.
+*   Includes a **deterministic rule-based fallback** that takes over automatically if the LLM encounters rate limits or API key issues.
+
+### 3. Constraint-Aware Decision Engine
+*   **File:** [decider.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/decider.py)
+*   Validates candidate actions against strict guardrails (`DecisionConstraints`) such as risk limits, minimum confidence levels, and human-in-the-loop approval triggers.
+*   Applies a reinforcement multiplier to action weights dynamically based on historical outcomes of similar incidents.
+
+### 4. Dynamic Action Executor
+*   **File:** [executor.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/executor.py) & [routing_config.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/simulation/routing_config.py)
+*   Actually closes the loop by modifying the active payment configuration.
+*   Executes actions:
+    *   `recommend_reroute`: Reroutes traffic away from degraded gateways.
+    *   `recommend_path_suppression`: Suppresses pathways during complete outages.
+    *   `recommend_retry_adjustment`: Restricts retry policies to prevent retry storms.
+
+### 5. Persistent SQLite Learning datastore
+*   **File:** [memory.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/memory.py) & [learner.py](file:///Users/bhanujbhalla/Desktop/Projects/payment%20agentic%20ai%20/agent/learner.py)
+*   Replaced local JSON files with a structured SQLite database (`action_memory.db`).
+*   Stores outcomes in a relational table, allowing the system to query past experiences, calculate learning rates, and show learning trends.
+
+---
+
+## 🧠 Production-Grade Safety Principles
+
+*   **Causality-Safe Learning:** The learner skips reinforcement updates when non-intervention actions (`do_nothing` or `alert_ops`) are selected, preventing the agent from taking false credit/blame for natural performance variance.
+*   **Graceful Fallback:** If the LLM service is degraded or quota-limited, the system falls back seamlessly to rule-based diagnostic routing.
+*   **State-Isolation Testing:** Built-in autouse fixtures ensure that simulation routing states are completely reset between unit tests, ensuring no cross-contamination.
+
+---
+
+## ⚡ Quickstart
+
+### Setup & Requirements
 ```bash
+# Install core dependencies
 pip install -r requirements.txt
+
+# Add your Gemini API key (optional, fallback engine active by default)
+echo "GEMINI_API_KEY=your_key_here" > .env
 ```
 
-### Environment Setup
-
-Create `.env` file:
-```env
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-```
-
-**Note**: System works without API key (uses deterministic fallback)
-
----
-
-## 📁 Project Structure
-
-```
-payment-agentic-ai/
-├── FULL_DEMO.py              # Complete demo script
-├── README_DEMO.md            # Detailed demo guide
-├── agent/                    # Core agent components
-│   ├── metrics.py
-│   ├── reasoner.py
-│   ├── decider.py
-│   ├── executor.py
-│   ├── evaluator.py
-│   ├── learner.py
-│   └── memory.py
-├── simulation/               # Payment simulation
-├── examples/                 # Individual demos
-├── tests/                    # Unit tests (18+)
-└── docs/                     # Documentation
-```
-
----
-
-## 🎬 Demo Scenarios
-
-### 1. Complete System Demo
+### Running the Automated Tests
+Ensure the full agent loop, SQLite memory, and config execution work properly:
 ```bash
-PYTHONPATH=. python FULL_DEMO.py
-```
-Shows entire agentic loop with learning
-
-### 2. Learning Loop Only
-```bash
-PYTHONPATH=. python examples/learning_demo.py
-```
-Focuses on outcome evaluation and memory
-
-### 3. Runtime Config Change
-```bash
-PYTHONPATH=. python examples/runtime_config_demo.py
-```
-Shows safe configuration updates
-
----
-
-## 🧪 Testing
-
-```bash
-# Run all tests
 pytest tests/ -v
-
-# Run specific component tests
-pytest tests/test_executor.py -v
-pytest tests/test_decider.py -v
 ```
 
-**Test Coverage**: 18+ tests, all passing ✅
-
----
-
-## 📈 Key Results
-
-### Performance Improvement
-- **Success Rate**: 85.1% → 98.5% (+13.4%)
-- **Latency**: 711ms → 328ms (-383ms)
-- **Retries**: 15 → 0 (-15 retries)
-- **Outcome**: SUCCESS (score: 1.00)
-
-### Learning Evidence
-- Memory stored: `./data/memory/full_demo.json`
-- Action success rate tracked: 100%
-- Future decisions adjusted based on outcomes
-
----
-
-## 🔑 Key Features
-
-### 1. Autonomous Operation
-- Self-monitoring and self-healing
-- No human intervention required
-- Continuous learning and improvement
-
-### 2. AI-Powered Reasoning
-- Gemini 2.5 Flash integration
-- Hypothesis generation
-- Natural language explanations
-- **Works without LLM** (deterministic fallback)
-
-### 3. Safe Action Execution
-- Approval guardrails for high-risk actions
-- Runtime config changes (no code modification)
-- Reversible actions with state tracking
-- Comprehensive logging
-
-### 4. Learning from Experience
-- Stores outcomes in persistent memory
-- Evaluates success/failure deterministically
-- Adjusts future decisions (0.8x to 1.2x)
-- Bounded and explainable
-
----
-
-## 🛠️ Technical Stack
-
-- **Language**: Python 3.12
-- **AI**: Google Gemini 2.5 Flash
-- **Storage**: JSON-based memory
-- **Testing**: pytest
-- **Architecture**: Clean separation of concerns
-
----
-
-## 📚 Documentation
-
-- [`README_DEMO.md`](README_DEMO.md) - Complete demo guide
-- [`HOW_TO_CHECK_LEARNING.md`](HOW_TO_CHECK_LEARNING.md) - Learning verification
-- [`HOW_TO_CHECK_EXECUTION.md`](HOW_TO_CHECK_EXECUTION.md) - Execution verification
-- [`RUNTIME_CONFIG_DEMO.md`](RUNTIME_CONFIG_DEMO.md) - Config change guide
-
----
-
-## ❓ FAQ
-
-**Q: Does it use real payment data?**  
-A: No, simulated for safety. Realistic and configurable.
-
-**Q: Does it modify source code?**  
-A: No, only runtime configuration. Production-safe.
-
-**Q: How does learning work?**  
-A: Deterministic rules based on past outcomes. No neural network training.
-
-**Q: Can it run without Gemini?**  
-A: Yes! Core logic is deterministic. LLM only adds explanations.
-
-**Q: Is this production-ready?**  
-A: Core is production-ready. Needs deployment infrastructure for full production.
-
----
-
-## 🎯 For Judges/Reviewers
-
-### What Makes This Special?
-
-1. **Complete Agentic Loop** - Not just AI reasoning, but full observe-decide-act-learn cycle
-2. **Production-Grade** - Comprehensive testing, error handling, logging
-3. **Safe by Design** - Approval guardrails, reversible actions, bounded learning
-4. **Deterministic Core** - Works without LLM, explainable decisions
-5. **Real Impact** - Measurable improvements (+13% success rate)
-
-### Run This First
-
+### Running the Validation Script
+Execute the 5-scenario evaluation validation:
 ```bash
-PYTHONPATH=. python FULL_DEMO.py
+python run_multi_scenario_validation.py
 ```
 
-Press ENTER to advance through each stage. Takes ~5 minutes.
-
----
-
-## 📊 System Status
-
-- ✅ Steps 1-7 Complete
-- ✅ 18+ Tests Passing
-- ✅ Full Agentic Loop Working
-- ✅ Learning Active
-- ✅ Production-Ready Core
-
----
-
-## 🚀 Next Steps (Future Work)
-
-- [ ] REST API endpoints
-- [ ] Monitoring dashboard
-- [ ] Human approval workflow UI
-- [ ] Database persistence
-- [ ] Rollback mechanism
-- [ ] Multi-agent coordination
-
----
-
-## 📝 License
-
-[Your License Here]
-
----
-
-## 🙏 Acknowledgments
-
-Built with:
-- Google Gemini 2.5 Flash
-- Python 3.12
-- pytest
-
----
-
-**READY TO DEMO** ✨
-
-Run `FULL_DEMO.py` to see the complete system in action!
+### Running on Real Log Files
+To run the agent sequential loop on historical transaction files (CSV or JSON):
+```bash
+python run_on_real_data.py --file your_transactions.csv --window 300
+```

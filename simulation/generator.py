@@ -112,8 +112,17 @@ class PaymentGenerator:
             payment_method = random.choice(list(PaymentMethod))
         
         # Select bank
+        from simulation.routing_config import ROUTING_STATE
         if bank is None:
-            bank = random.choice(self.BANKS)
+            available_banks = [b for b in self.BANKS if b in ROUTING_STATE["active_banks"] and b not in ROUTING_STATE["suppressed_banks"]]
+            if not available_banks:
+                available_banks = self.BANKS
+            bank = random.choice(available_banks)
+        else:
+            if bank in ROUTING_STATE["suppressed_banks"] or bank not in ROUTING_STATE["active_banks"]:
+                available_banks = [b for b in self.BANKS if b in ROUTING_STATE["active_banks"] and b not in ROUTING_STATE["suppressed_banks"]]
+                if available_banks:
+                    bank = random.choice(available_banks)
         
         # Generate amount based on realistic distribution
         amount = self._generate_amount()
@@ -233,19 +242,13 @@ class PaymentGenerator:
         original_payment: PaymentRecord,
         retry_count: int = 3
     ) -> List[PaymentRecord]:
-        """
-        Simulate retry attempts for a failed payment.
+        from simulation.routing_config import ROUTING_STATE
+        limit = ROUTING_STATE.get("retry_limits", {}).get(original_payment.payment_method.value, retry_count)
+        actual_retry_count = min(retry_count, limit)
         
-        Args:
-            original_payment: The original failed payment
-            retry_count: Number of retries to generate
-            
-        Returns:
-            List of retry payment records
-        """
         retries = []
         
-        for i in range(1, retry_count + 1):
+        for i in range(1, actual_retry_count + 1):
             # Retries happen with exponential backoff
             retry_delay = 2 ** i  # 2, 4, 8 seconds
             retry_time = original_payment.timestamp + timedelta(seconds=retry_delay)

@@ -174,26 +174,37 @@ Write a brief, clear explanation for the ops team. Plain text only, no formattin
         
         # Check for bank issues
         if signals.degraded_banks:
-            hypotheses["bank_degradation"] = 0.8
-            explanation_parts.append(
-                f"Detected degraded banks: {', '.join(signals.degraded_banks)}."
-            )
-            assumptions.append("Bank degradation is the primary cause")
+            # Find the worst performing bank's failure rate
+            max_bank_fail = max(signals.bank_failure_rates.values()) if signals.bank_failure_rates else 0.0
+            
+            if len(signals.degraded_banks) > 2:
+                # Systemic issue affecting multiple banks
+                hypotheses["network_issues"] = 0.75
+                explanation_parts.append("Systemic failure across multiple providers suggests network or load issues.")
+                assumptions.append("Broad failure is network or load related")
+            elif max_bank_fail > 0.6:
+                hypotheses["bank_outage"] = 0.85
+                explanation_parts.append(f"Critical: Outage detected on bank(s): {', '.join(signals.degraded_banks)}.")
+                assumptions.append("Outage on specific bank")
+            else:
+                hypotheses["bank_degradation"] = 0.8
+                explanation_parts.append(f"Detected degraded banks: {', '.join(signals.degraded_banks)}.")
+                assumptions.append("Bank degradation is the primary cause")
         
         # Check for high failure rate
-        if signals.overall_failure_rate > 0.5:
+        if signals.overall_failure_rate > 0.5 and "bank_outage" not in hypotheses:
             hypotheses["bank_outage"] = 0.7
             explanation_parts.append("Very high failure rate suggests possible outage.")
         
         # Check for latency issues
-        if signals.p95_latency_ms > 1000:
+        if signals.p95_latency_ms > 1000 and "network_issues" not in hypotheses:
             hypotheses["network_issues"] = 0.6
             explanation_parts.append("High latency detected.")
         
         # Check for retry storm
         if signals.total_retries > signals.total_payments * 0.3:
-            hypotheses["retry_storm"] = 0.65
-            explanation_parts.append("High retry rate detected.")
+            hypotheses["retry_storm"] = 0.85
+            explanation_parts.append("High retry rate detected, indicating a retry storm.")
         
         # Check retry effectiveness
         if signals.retry_effectiveness < -0.2:
