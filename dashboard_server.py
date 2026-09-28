@@ -4,7 +4,10 @@ Exposes endpoints for fetching metrics, execution history, and triggering scenar
 """
 
 import asyncio
+import copy
+import re
 import time
+import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import logging
@@ -29,6 +32,7 @@ from agent.decider import DecisionEngine
 from agent.executor import ActionExecutor
 from agent.evaluator import OutcomeEvaluator
 from agent.memory import ActionMemory
+from agent.learner import ActionLearner
 from agent.learning_models import ActionOutcome, OutcomeClassification
 
 # Set up logging
@@ -85,11 +89,55 @@ _SCREENSHOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "doc
 if os.path.isdir(_SCREENSHOTS_DIR):
     app.mount("/screenshots", StaticFiles(directory=_SCREENSHOTS_DIR), name="screenshots")
 
-# Shared memory db path resolve
-DB_PATH = "./data/memory/action_memory.db"
+# --- Per-visitor sessions ------------------------------------------------
+# The simulator's ROUTING_STATE is one global, and the memory DB was one shared
+# file, so every visitor used to see (and could wipe) everyone else's run.
+# Each browser now gets an opaque cookie id -> its own SQLite file and its own
+# routing snapshot. Runs are serialized with a lock because the simulator's
+# routing state is process-global while a scenario executes.
+SESSIONS_DIR = "./data/memory/sessions"
+SESSION_TTL_SECONDS = 6 * 3600
+MAX_SESSION_FILES = 200
+_SID_RE = re.compile(r"^[a-f0-9]{32}$")
+_DEFAULT_ROUTING = copy.deepcopy(ROUTING_STATE)
+_SESSION_ROUTING: Dict[str, Dict[str, Any]] = {}
+_RUN_LOCK = asyncio.Lock()
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    sid = request.cookies.get("sid", "")
+    is_new = not _SID_RE.match(sid)
+    if is_new:
+        sid = uuid.uuid4().hex
+    request.state.sid = sid
+    response = await call_next(request)
+    if is_new:
+        response.set_cookie("sid", sid, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="lax")
+    return response
+
+def session_db_path(sid: str) -> str:
+    return os.path.join(SESSIONS_DIR, f"{sid}.db")
+
+def _prune_sessions():
+    """Delete stale/excess session DB files and routing snapshots (bounded disk + memory)."""
+    now = time.time()
+    try:
+        files = [os.path.join(SESSIONS_DIR, f) for f in os.listdir(SESSIONS_DIR) if f.endswith(".db")]
+    except FileNotFoundError:
+        files = []
+    files.sort(key=os.path.getmtime)
+    for f in list(files):
+        if now - os.path.getmtime(f) > SESSION_TTL_SECONDS or len(files) > MAX_SESSION_FILES:
+            try:
+                os.remove(f)
+                files.remove(f)
+            except OSError:
+                pass
+    for sid in [k for k, v in _SESSION_ROUTING.items() if now - v["ts"] > SESSION_TTL_SECONDS]:
+        _SESSION_ROUTING.pop(sid, None)
+
+def get_db_connection(path: str):
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -101,23 +149,25 @@ def get_top_hyp(reasoning):
     return {"hypothesis": "normal_operation", "confidence": 0.5}
 
 @app.get("/api/metrics")
-async def get_metrics():
-    """Retrieve the current active, suppressed banks and retry limits."""
+async def get_metrics(request: Request):
+    """Retrieve this visitor's active, suppressed banks and retry limits."""
+    snap = _SESSION_ROUTING.get(request.state.sid, {}).get("state", _DEFAULT_ROUTING)
     return {
-        "active_banks": list(ROUTING_STATE["active_banks"]),
-        "suppressed_banks": list(ROUTING_STATE["suppressed_banks"]),
-        "retry_limits": dict(ROUTING_STATE["retry_limits"]),
+        "active_banks": list(snap["active_banks"]),
+        "suppressed_banks": list(snap["suppressed_banks"]),
+        "retry_limits": dict(snap["retry_limits"]),
         "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.get("/api/history")
-async def get_history():
-    """Fetch the agent memory log (SQLite DB records) in descending order."""
-    if not os.path.exists(DB_PATH):
+async def get_history(request: Request):
+    """Fetch this visitor's agent memory log (SQLite DB records) in descending order."""
+    db_path = session_db_path(request.state.sid)
+    if not os.path.exists(db_path):
         return []
-        
+
     try:
-        conn = get_db_connection()
+        conn = get_db_connection(db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM action_memories ORDER BY id DESC LIMIT 50")
         rows = cursor.fetchall()
@@ -154,25 +204,27 @@ async def get_history():
 
 @app.post("/api/reset")
 async def reset_agent_state(request: Request):
-    """Clear memory database and reset the routing overrides."""
+    """Clear this visitor's memory database and routing snapshot (other visitors are unaffected)."""
     _enforce_rate_limit(request, "reset")
-    reset_routing()
-    
-    # Clear memories table
-    if os.path.exists(DB_PATH):
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM action_memories")
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"Error resetting database: {e}")
-            
+    sid = request.state.sid
+    _SESSION_ROUTING.pop(sid, None)
+    try:
+        os.remove(session_db_path(sid))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.error(f"Error resetting session database: {e}")
     return {"status": "success", "message": "State reset successfully"}
 
 @app.post("/api/run_scenario")
 async def run_scenario(payload: Dict[str, str], request: Request):
+    _enforce_rate_limit(request, "run_scenario")
+    scenario = payload.get("scenario", "healthy")
+    async with _RUN_LOCK:
+        _prune_sessions()
+        return await _execute_scenario(scenario, request.state.sid)
+
+async def _execute_scenario(scenario: str, sid: str):
     """
     Executes a single scenario end-to-end:
     1. Resets routing state.
@@ -183,8 +235,6 @@ async def run_scenario(payload: Dict[str, str], request: Request):
     6. Triggers post-intervention metrics.
     7. Evaluates learning and returns full report.
     """
-    _enforce_rate_limit(request, "run_scenario")
-    scenario = payload.get("scenario", "healthy")
     logger.info(f"Running scenario: {scenario}")
 
     # Reset routing config to fresh defaults
@@ -194,9 +244,11 @@ async def run_scenario(payload: Dict[str, str], request: Request):
     engine = MetricsEngine()
     reasoner = Reasoner()
     decider = DecisionEngine()
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    memory = ActionMemory(storage_path=session_db_path(sid))
+    learner = ActionLearner(memory)
     executor = ActionExecutor()
     evaluator = OutcomeEvaluator()
-    memory = ActionMemory(storage_path=DB_PATH)
     
     # 1. Setup Scenario & Generate Baseline (Failure Phase)
     gen = PaymentGenerator(config={'seed': 42})
@@ -261,10 +313,11 @@ async def run_scenario(payload: Dict[str, str], request: Request):
     
     # 2. Agent Reasoning & Decision
     reasoning = await reasoner.reason(pre_signals)
-    decision = decider.decide(reasoning, pre_signals)
+    decision = decider.decide(reasoning, pre_signals, learner=learner)
     
     # 3. Action Execution (Alters ROUTING_STATE in real-time)
     execution_result = executor.execute(decision, pre_signals)
+    _SESSION_ROUTING[sid] = {"state": copy.deepcopy(ROUTING_STATE), "ts": time.time()}
     
     # 4. Generate Post-Intervention (Recovery Phase)
     gen_post = PaymentGenerator(config={'seed': 43})
@@ -354,6 +407,7 @@ async def run_scenario(payload: Dict[str, str], request: Request):
             "top_hypothesis": top_hypothesis["hypothesis"],
             "confidence": top_hypothesis["confidence"],
             "explanation": reasoning.explanation,
+            "explanation_source": reasoner.last_explanation_source,
             "is_correct": is_correct_diagnosis
         },
         "decision": {
@@ -472,8 +526,8 @@ INDEX_HTML = """
 
         const PIPELINE_STAGES = [
             { title: "1. Observe", file: "metrics.py", color: "indigo", desc: "MetricsEngine ingests raw transaction logs and computes success rate, p95 latency, failure rate, and retry-effectiveness signals per gateway." },
-            { title: "2. Reason", file: "reasoner.py", color: "purple", desc: "Gemini-2.5-flash scores multiple root-cause hypotheses (bank outage, degradation, retry storm) with confidence — falls back to deterministic rules if the LLM is unavailable." },
-            { title: "3. Decide", file: "decider.py", color: "sky", desc: "DecisionEngine validates candidate actions against risk guardrails, confidence thresholds, and human-approval constraints, applying a reinforcement multiplier from past outcomes." },
+            { title: "2. Reason", file: "reasoner.py", color: "purple", desc: "Deterministic rules classify the root cause (bank outage, degradation, retry storm) and compute confidence; Gemini-2.5-flash then writes the plain-English explanation. If Gemini is unavailable, a rule-based explanation is used." },
+            { title: "3. Decide", file: "decider.py", color: "sky", desc: "DecisionEngine scores candidate actions against risk guardrails, confidence thresholds, and human-approval constraints, then nudges scores by up to ±20% based on similar past outcomes in your session." },
             { title: "4. Act", file: "executor.py", color: "emerald", desc: "ActionExecutor mutates the live ROUTING_STATE — suppressing gateways, rerouting traffic, or capping retries — closing the loop in real time." },
             { title: "5. Learn", file: "learner.py", color: "rose", desc: "OutcomeEvaluator classifies SUCCESS/FAILURE from pre/post metrics and persists the experience to SQLite for future reinforcement." },
         ];
@@ -620,29 +674,29 @@ INDEX_HTML = """
             },
             {
                 stage: "reason",
-                headline: "Gemini looks at the signals and diagnoses what's actually wrong.",
-                body: "The reasoner scores multiple competing hypotheses — bank outage, partial degradation, retry storm — and returns the most likely one with a confidence score and a plain-English explanation. No API key or over quota? It falls back to deterministic rules automatically, so the loop never stalls.",
+                headline: "Rules classify what's wrong; Gemini explains it in plain English.",
+                body: "A deterministic classifier scores competing hypotheses — bank outage, partial degradation, retry storm — and picks the most likely one with a confidence score. Gemini then writes the ops-friendly explanation. If Gemini is unavailable or over quota, a rule-based explanation is used, so the loop never stalls.",
                 img: "/screenshots/stages/reason.png",
-                caption: "A real Gemini-2.5-flash response: 85% confidence it's a bank outage, with the specific banks named.",
+                caption: "85% confidence it's a bank outage (rule-based classification), with the explanation text written by Gemini-2.5-flash.",
             },
             {
                 stage: "decide",
                 headline: "A decision engine checks the diagnosis against hard safety rules before anything happens.",
-                body: "Confidence thresholds, risk limits, and human-approval gates all get checked here. A reinforcement multiplier — learned from past outcomes of similar incidents — nudges the choice of action. High-risk actions are held for a human instead of firing blind.",
+                body: "Confidence thresholds, risk limits, and human-approval gates all get checked here. A bounded (±20%) adjustment learned from similar past outcomes in your session nudges the choice of action. High-risk actions are held for a human instead of firing blind.",
                 img: "/screenshots/stages/decide.png",
                 caption: "The chosen action, its risk level, and why — including when the agent holds for human sign-off instead of auto-executing.",
             },
             {
                 stage: "act",
                 headline: "The loop actually closes: live routing config gets mutated, not just recommended.",
-                body: "ActionExecutor writes directly to the routing state — suppressing a dead gateway, rerouting traffic, or capping retries. This is the difference between a chatbot that suggests fixes and an agent that performs them.",
+                body: "ActionExecutor writes directly to the simulator's routing state — suppressing a dead gateway, rerouting traffic, or capping retries. This is the difference between a chatbot that suggests fixes and an agent that performs them.",
                 img: "/screenshots/stages/act.png",
                 caption: "Real effect of a retry-storm response: retry limits capped from 3 to 2 across every payment method, read live from the simulator's own state.",
             },
             {
                 stage: "learn",
                 headline: "Every outcome is scored and written to a real database — so the agent gets better.",
-                body: "OutcomeEvaluator compares pre/post metrics, classifies the result SUCCESS or FAILURE, and persists it to SQLite. Future decisions for similar incidents are weighted by this history. Non-interventions are never credited or blamed — that's the causality-safety guardrail.",
+                body: "OutcomeEvaluator compares pre/post metrics, classifies the result SUCCESS or FAILURE, and persists it to SQLite. After at least two similar past outcomes in your session, that history adjusts future action scores. Non-interventions are never credited or blamed — that's the causality-safety guardrail.",
                 img: "/screenshots/stages/learn.png",
                 caption: "A logged outcome: failure rate dropped 65%, and the experience is now queryable in the SQLite Memories tab.",
             },
@@ -650,10 +704,11 @@ INDEX_HTML = """
 
         const HOME_FEATURES = [
             { title: "5 injectable failure scenarios", desc: "Healthy traffic, single-bank degradation, full outage, UPI retry storm, or multiple simultaneous failures — one click each." },
+            { title: "Your own session", desc: "Every visitor gets an isolated routing state and memory, so nobody else's clicks or resets affect your demo." },
             { title: "Live KPI strip", desc: "Scenario runs, average success-rate uplift, learning outcome score, and active gateway count — all computed from real history, not hardcoded." },
             { title: "Full SQLite audit trail", desc: "Every intervention the agent makes is queryable: baseline vs. post metrics, outcome score, and evaluation — nothing is a black box." },
             { title: "Human-in-the-loop guardrail", desc: "High-risk actions are marked PENDING_HUMAN_APPROVAL instead of executing automatically." },
-            { title: "Graceful LLM fallback", desc: "If Gemini is rate-limited or down, a deterministic rule-based reasoner takes over so the loop never stalls." },
+            { title: "Graceful LLM fallback", desc: "If Gemini is rate-limited or down, a rule-based explanation is used so the loop never stalls; recent Gemini answers are cached to stay inside the free quota." },
             { title: "Causality-safe learning", desc: "The agent never takes credit or blame for outcomes it didn't cause — do_nothing and alert_ops actions are excluded from reinforcement." },
         ];
 
@@ -667,7 +722,7 @@ INDEX_HTML = """
                             An AI agent that watches, diagnoses, and fixes payment routing failures — on its own.
                         </h2>
                         <p className="text-sm md:text-base text-slate-400 max-w-2xl mx-auto mt-4">
-                            When a bank gateway degrades or goes down, this agent detects it, asks Gemini to diagnose the root cause, decides on a safe fix, rewrites the live routing config, and remembers whether it worked — every step tagged below so you can see exactly which part of the loop is running.
+                            When a bank gateway degrades or goes down, this agent detects it, classifies the root cause, has Gemini explain it in plain English, decides on a safe fix, rewrites the (simulated) routing config, and remembers whether it worked — every step tagged below so you can see exactly which part of the loop is running.
                         </p>
                         <div className="flex flex-wrap items-center justify-center gap-3 mt-7">
                             <button onClick={onLaunch} className="px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/25 transition">
@@ -1084,6 +1139,9 @@ INDEX_HTML = """
                                                     </div>
                                                     <p className="text-sm text-slate-200 bg-slate-900/40 p-3 rounded-xl border border-slate-800/80 leading-relaxed">
                                                         {latestRun.diagnosis.explanation}
+                                                    </p>
+                                                    <p className="text-[11px] text-slate-500 mt-1.5">
+                                                        Classification &amp; confidence: deterministic rules · Explanation: {{gemini: "Gemini-2.5-flash (live)", gemini_cached: "Gemini-2.5-flash (cached from an earlier identical run)", fallback: "rule-based fallback"}[latestRun.diagnosis.explanation_source] || "rule-based fallback"}
                                                     </p>
                                                 </div>
 

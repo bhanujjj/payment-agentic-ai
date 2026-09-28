@@ -11,12 +11,16 @@ It only provides reasoning and interpretation.
 import logging
 import json
 import os
+import time
 from typing import Dict, Any, Optional
 
 import google.generativeai as genai
 
 from agent.signals import PaymentSignals
 from agent.reasoning_models import ReasoningResult
+
+_EXPLANATION_CACHE: Dict[str, tuple] = {}
+_EXPLANATION_TTL_SECONDS = 3600
 
 
 class Reasoner:
@@ -42,6 +46,8 @@ class Reasoner:
         """
         self.config = config or {}
         self.logger = logging.getLogger(__name__)
+        # "gemini" | "gemini_cached" | "fallback" — how the last explanation was produced
+        self.last_explanation_source = "fallback"
         
         # Get API key
         api_key = self.config.get('gemini_api_key') or os.getenv('GEMINI_API_KEY')
@@ -78,6 +84,7 @@ class Reasoner:
         self.logger.info("Starting reasoning process")
         
         # STEP 1: Deterministic classification and confidence (NO LLM)
+        self.last_explanation_source = "fallback"
         reasoning = self._deterministic_reasoning(signals)
         
         # STEP 2: Try to get human-readable explanation from Gemini (optional)
@@ -85,7 +92,7 @@ class Reasoner:
             try:
                 explanation = await self._get_llm_explanation(signals, reasoning)
                 reasoning.explanation = explanation
-                self.logger.info("✅ Got LLM explanation")
+                self.logger.info("✅ Got LLM explanation (%s)", self.last_explanation_source)
             except Exception as e:
                 self.logger.warning(f"LLM explanation failed: {e}. Using default.")
                 # Keep the default explanation from deterministic reasoning
@@ -129,6 +136,13 @@ Avg Latency: {signals.avg_latency_ms:.0f}ms
 
 Write a brief, clear explanation for the ops team. Plain text only, no formatting."""
         
+        # Identical inputs -> identical prompt -> reuse a recent real Gemini answer.
+        # Keeps a public demo inside Gemini's small free-tier quota.
+        cached = _EXPLANATION_CACHE.get(prompt)
+        if cached and time.time() - cached[1] < _EXPLANATION_TTL_SECONDS:
+            self.last_explanation_source = "gemini_cached"
+            return cached[0]
+
         # Call Gemini
         response = self.llm_client.generate_content(
             prompt,
@@ -144,7 +158,9 @@ Write a brief, clear explanation for the ops team. Plain text only, no formattin
         # Fallback if response is too long or empty
         if not explanation or len(explanation) > 500:
             return reasoning.explanation
-        
+
+        _EXPLANATION_CACHE[prompt] = (explanation, time.time())
+        self.last_explanation_source = "gemini"
         return explanation
     
 

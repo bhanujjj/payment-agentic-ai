@@ -1,6 +1,6 @@
 # 🚀 Closed-Loop Autonomous Payment Routing AI Agent
 
-A production-grade, risk-aware **Closed-Loop Autonomous Routing System** that monitors real-time payment network performance, diagnoses failures using generative LLMs (Gemini-2.5-flash), executes config-level routing mitigations, and leverages persistent reinforcement learning (via SQLite) to continuously optimize routing decisions.
+A production-grade, risk-aware **Closed-Loop Autonomous Routing System** that monitors real-time payment network performance, classifies failures with deterministic rules (Gemini-2.5-flash writes the plain-English explanation), executes config-level routing mitigations on a simulated payment network, and uses outcome history persisted in SQLite to nudge future decisions (bounded ±20%).
 
 Built to demonstrate what an AI-native reliability layer for a payments platform looks like end-to-end: **detect → diagnose → decide → act → learn**, with a human-approval gate on high-risk actions and a full audit trail of every decision.
 
@@ -18,13 +18,13 @@ python dashboard_server.py
 ```
 Open **[http://localhost:8000/](http://localhost:8000/)** and you land on a **Home page** that explains the whole product before you touch anything — a live walkthrough of all five stages, each with its own screenshot and colored badge (①Observe ②Reason ③Decide ④Act ⑤Learn), plus a feature grid and one-click links into the live demo.
 
-Then in the **Control Center**, the same five badges appear directly on the real results of a scenario run — a real HDFC Bank outage, diagnosed by Gemini, resolved automatically, and its outcome persisted to SQLite:
+Then in the **Control Center**, the same five badges appear directly on the real results of a scenario run — a real HDFC Bank outage, classified by the rule engine and explained by Gemini, resolved automatically, and its outcome persisted to SQLite:
 
 ![Control Center — every section tagged with its pipeline stage](docs/screenshots/control_center_outage_recovery.png)
 
-*Every card is labeled: ① OBSERVE (the baseline vs. healed metrics MetricsEngine computed), ② REASON (Gemini's diagnosis and confidence), ③ DECIDE (the decision engine's chosen action, risk level, and rationale), ④ ACT (the live routing config the executor actually mutated), ⑤ LEARN (the outcome score persisted to SQLite). Nothing here is mocked — this is a real request/response cycle.*
+*Every card is labeled: ① OBSERVE (the baseline vs. healed metrics MetricsEngine computed), ② REASON (rule-based classification and confidence, with a Gemini-written explanation), ③ DECIDE (the decision engine's chosen action, risk level, and rationale), ④ ACT (the live routing config the executor actually mutated), ⑤ LEARN (the outcome score persisted to SQLite). Nothing here is mocked — this is a real request/response cycle.*
 
-Every intervention is written to a real SQLite database and surfaced in the **SQLite Memories** tab, so the reinforcement-learning signal is auditable, not a black box:
+Every intervention is written to a real SQLite database and surfaced in the **SQLite Memories** tab, so the learning signal is auditable, not a black box:
 
 ![SQLite Memories — full audit trail of past agent decisions and outcomes](docs/screenshots/sqlite_memories_log.png)
 
@@ -41,7 +41,7 @@ What you get, tab by tab:
 | ① Observe | ② Reason | ③ Decide |
 | :---: | :---: | :---: |
 | ![Observe](docs/screenshots/stages/observe.png) | ![Reason](docs/screenshots/stages/reason.png) | ![Decide](docs/screenshots/stages/decide.png) |
-| MetricsEngine's pre/post signal | Gemini's diagnosis + confidence | The decision engine's chosen action |
+| MetricsEngine's pre/post signal | Rule-based diagnosis + Gemini explanation | The decision engine's chosen action |
 
 | ④ Act | ⑤ Learn |
 | :---: | :---: |
@@ -51,6 +51,8 @@ What you get, tab by tab:
 ---
 
 ## 📈 System Metrics & Validation Results
+
+> Scope note: everything runs against a **simulated** payment network (seeded traffic generator), not real bank traffic. Diagnosis accuracy was 60% (3/5) — the retry-storm scenario is currently classified as `network_issues`, though the chosen retry-cap action still recovers it.
 
 We executed a comprehensive 5-scenario multi-run validation suite (simulating **10 transaction windows** and **1,690 transaction events**) to measure diagnosis accuracy, recovery times, and metric transitions. These numbers come straight from [`run_multi_scenario_validation.py`](run_multi_scenario_validation.py) — re-run it yourself to reproduce them:
 
@@ -121,7 +123,7 @@ The **Architecture** tab in the live dashboard renders this same pipeline intera
 ### 3. Constraint-Aware Decision Engine
 *   **File:** [agent/decider.py](agent/decider.py)
 *   Validates candidate actions against strict guardrails (`DecisionConstraints`) such as risk limits, minimum confidence levels, and human-in-the-loop approval triggers.
-*   Applies a reinforcement multiplier to action weights dynamically based on historical outcomes of similar incidents.
+*   Applies a bounded (±20%) adjustment to action scores based on similar past outcomes (needs ≥2 samples). In the dashboard this history is per visitor session.
 
 ### 4. Dynamic Action Executor
 *   **File:** [agent/executor.py](agent/executor.py) & [simulation/routing_config.py](simulation/routing_config.py)
@@ -146,7 +148,8 @@ The **Architecture** tab in the live dashboard renders this same pipeline intera
 ## 🧠 Production-Grade Safety Principles
 
 *   **Causality-Safe Learning:** The learner skips reinforcement updates when non-intervention actions (`do_nothing` or `alert_ops`) are selected, preventing the agent from taking false credit/blame for natural performance variance.
-*   **Graceful Fallback:** If the LLM service is degraded or quota-limited, the system falls back seamlessly to rule-based diagnostic routing.
+*   **Graceful Fallback:** Classification never depends on the LLM. If Gemini is degraded or quota-limited, a rule-based explanation is used; recent identical Gemini answers are cached to stay inside the free quota.
+*   **Session Isolation & Rate Limiting:** Each visitor gets an isolated routing state and SQLite memory (cookie-scoped, auto-pruned), and the endpoints that call Gemini are rate limited per IP.
 *   **Risk-Gated Execution:** High-risk actions (e.g. full path suppression) are flagged `PENDING_HUMAN_APPROVAL` rather than executed blindly.
 *   **State-Isolation Testing:** Built-in autouse fixtures ensure that simulation routing states are completely reset between unit tests, ensuring no cross-contamination.
 
